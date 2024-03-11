@@ -1,0 +1,211 @@
+---
+title: "Problem Set #2"
+subtitle: "BST 258: Causal Inference -- Theory and Practice"
+author: "Fuyu Guo"
+date: "2023-03-10"
+format:
+  pdf:
+    documentclass: scrartcl
+    papersize: letter
+    fontsize: 11pt
+    geometry:
+      - margin=1in
+      - heightrounded
+    number-sections: false
+    colorlinks: true
+    link-citations: true
+    callout-appearance: simple
+    callout-icon: false
+    # figure options
+    fig-width: 6
+    fig-asp: 0.618
+    fig-cap-location: bottom
+    # code block options
+    code-line-numbers: false
+    code-block-bg: false
+    highlight-style: nord
+bibliography: refs.bib
+---
+
+```{r}
+#| echo: false
+#| message: false
+#| label: global-setup
+# NOTE: The immediately following line loads an renv environment located at the
+#       nearest "top-level" directory, as marked by a `.here` file, which is
+#       located by the here::here() function. This would be a useful tool if,
+#       say, this template.qmd file was not located at the top-level directory.
+#       Here, renv should activate automatically when this file is opened.
+#renv::load(here::here())
+library(here)
+```
+
+## Question 1
+
+### Part 1
+
+#### 1.
+We do not need to invoke conditional exchangeability to derive the two properties list above. The two property hold by the nature of weighting.
+
+With conditional exchangeability, the standardized mean from the unadjusted population equals the counterfactual mean
+
+$$
+\begin{aligned}
+\mathbb{E}[Y^a] &= \sum_L\mathbb{P}[Y^a|L]\mathbb{P}(L=l) \\
+&= \sum_L\mathbb{P}[Y|L=l, A=a]\mathbb{P}(L=l)\\
+&= \sum_L\mathbb{P}[Y|L =l, A=a]\mathbb{P}(L=l)
+\end{aligned}$$
+Then the mean from the pseduo-population equals the counterfactual mean of interest.
+
+#### 2.
+
+$$
+\begin{aligned}
+& \mathbb{E}\left[\frac{\mathbb{I}(A=a)\}}{\mathbb{P}(A \mid L)}\right] \\
+& =\mathbb{E}\left[\mathbb{E}\left[\left.\frac{\mathbb{I}(A=a) Y}{\mathbb{P}(A \mid L)} \right\rvert\, L\right]\right] \\
+& =\mathbb{E}\left[\frac{1}{\mathbb{P}(A \mid L)} \mathbb{E}[\mathbb{I}(A=a) Y \mid L]\right] \\
+& =\mathbb{E}\left[\frac{1}{\mathbb{P}(A \mid L)} \mathbb{E}\left[\mathbb{I}(A=a) Y^a \mid L\right]\right] \\
+& =\mathbb{E}\left[\frac{1}{\mathbb{P}[A \mid L]} \mathbb{E}[\mathbb{I}(A=a \mid L)] \mathbb{E}[|a| L]\right] \\
+& =\mathbb{E}\left[\mathbb{E}\left[Y^a \mid L\right]\right] \\
+& =\mathbb{E}\left[Y^a\right] \\
+&
+\end{aligned}
+$$
+
+The third equality holds because by consistency, $\mathbb{I}(A=a)Y = Y^a$. The fourth equality holds because of conditional exchangeability.
+
+
+### Part 2
+
+#### a).
+
+
+```{r, eval=FALSE}
+library(fastverse)
+library(readxl)
+library(stringr)
+
+# create URLs for downloading NHEFS data
+url_trunks <- c("2012/10/nhefs_sas.zip", "2012/10/nhefs_stata.zip",
+"2017/01/nhefs_excel.zip", "1268/20/nhefs.csv")
+url_stub <- "https://cdn1.sph.harvard.edu/wp-content/uploads/sites/1268/"
+data_urls <- lapply(url_trunks, function(url_trunk) {
+paste0(url_stub, url_trunk)
+})
+
+# download and unzip files
+temp <- tempfile()
+for (i in seq_len(sum(str_count(url_trunks, "zip")))) {
+download.file(data_urls[[i]], temp)
+unzip(temp, exdir = "data")
+}
+download.file(data_urls[[4]], "data/nhefs.csv")
+```
+
+:::{.callout-note title="Code 1"}
+
+```{r}
+library(tidyverse)
+# read data from the downloaded csv fike
+dta <- read.csv("data/nhefs.csv")
+
+# Include observation with measured body weight at 1982
+dta <- dta %>% filter(!is.na(wt82))
+
+# check the number of observations
+dim(dta)
+
+
+# fit a logistic regression for conditional probability of qsmk
+fit_qsmk <- glm(qsmk ~ sex + age + I(age^2) + as.factor(race) + as.factor(education) + smokeintensity + I(smokeintensity^2) + smokeyrs + I(smokeyrs^2) + as.factor(active) + as.factor(exercise) + wt71 + I(wt71^2) , data = dta, family = binomial)
+
+fit_qsmk%>% summary()
+
+# calculate the predicted probability of qsmk = 1
+p_qsmk1 <- predict(fit_qsmk, dta, type = "response")
+dta$p_qsmk1 <- p_qsmk1
+
+# calculate the probability of qsmk = 1 for stabilized weights
+p <- mean(dta$qsmk)
+
+# generate unstabilized weights and stabilized weights
+dta$unstab_ipw <- ifelse(dta$qsmk == 1, 1/p_qsmk1, 1/(1-p_qsmk1))
+dta$stab_ipw <- ifelse(dta$qsmk == 1, p/p_qsmk1, (1-p)/(1-p_qsmk1))
+
+# distribution of unstabilized weights
+summary(dta$unstab_ipw)
+hist(dta$unstab_ipw, main = "Distribution of Unstabilized Weights", xlab = "Unstabilized Weights")
+
+# distribution of stabilized weights
+summary(dta$stab_ipw)
+hist(dta$stab_ipw, main = "Distribution of Stabilized Weights", xlab = "Stabilized Weights")
+
+
+```
+:::
+
+All the unstabilized ip-weights are greater than 1. On the contrary stabilized ip-weights are distributed on the two sides of 1, and show an approximately mean of 1. Also, the dispersion of unstabilized ip-weights is larger then the dispersion of stabilized ip-weights
+
+
+#### b).
+
+:::{.callout-note title="Code 2"}
+```{r}
+library(survey)
+# unstabilized ipw 
+fit_unstab <- svyglm(wt82_71 ~ qsmk, family = "gaussian",
+                     design = svydesign(ids = ~seqn, weights = ~unstab_ipw, data = dta))
+summary(fit_unstab)
+
+# stabilized ipw
+fit_stab <- svyglm(wt82_71 ~ qsmk, family = "gaussian",
+                     design = svydesign(ids = ~seqn, weights = ~stab_ipw, data = dta))
+summary(fit_stab)
+
+
+```
+:::
+- Unstabilized weights: ATE = 3.4405 (SE = 0.5257)
+- Stabilized weights: ATE = 3.4405 (SE = 0.5257)
+
+
+#### c).
+
+\textcolor{blue}{As stated in their book[@hernan2023causal], we can get an estimated of ATE by fitting a weighted linear regression, with ipw weights. The task for estimating ATE then equals the task of estimating the variance of the coefficients in the weighted linear regression. Then generally, we have two methods: 1) use bootstrapping to construct variances; 2) use robust sandwich esimtator for variance.}
+
+In b) I used ``svyglm'' function to get robust estimators for variance, below I will use the ``sandwich'' function to do it again.
+
+
+:::{.callout-note title="Code 3"}
+```{r}
+library(sandwich)
+# unstabilized ipw
+fit_unstab <-glm(wt82_71 ~ qsmk, family = "gaussian",
+                    weights =unstab_ipw, data = dta)
+vcov <- sandwich(fit_unstab)
+coef(fit_unstab)["qsmk"] + c(-1,1)*1.96*sqrt(vcov["qsmk", "qsmk"])
+
+
+# stabilized ipw
+fit_stab <-glm(wt82_71 ~ qsmk, family = "gaussian",
+                    weights =stab_ipw, data = dta)
+vcov <- sandwich(fit_stab)
+coef(fit_stab)["qsmk"] + c(-1,1)*1.96*sqrt(vcov["qsmk", "qsmk"])
+
+```
+:::
+
+- Unstabilized weights: 95% CI = (2.41 to 4.47)
+- Stabilized weights: 95% CI = (2.41 to 4.47)
+
+
+#### d).
+
+Both the point and the interval estimates are equal for estimatros from unstabilized and stabilized weights. Usually stabilized weights would bring more efficient estimators with lower variance. However, the last model to get ATE is a saturated model. As disucssed by @robins2000marginal,  the variability of the estimate will be the same whether we use the stabilized or unstabilized model.
+
+{{< pagebreak >}}
+
+### References
+
+::: {#refs}
+:::
