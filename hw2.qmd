@@ -47,15 +47,7 @@ library(here)
 #### 1.
 We do not need to invoke conditional exchangeability to derive the two properties list above. The two property hold by the nature of weighting.
 
-With conditional exchangeability, the standardized mean from the unadjusted population equals the counterfactual mean
-
-$$
-\begin{aligned}
-\mathbb{E}[Y^a] &= \sum_L\mathbb{P}[Y^a|L]\mathbb{P}(L=l) \\
-&= \sum_L\mathbb{P}[Y|L=l, A=a]\mathbb{P}(L=l)\\
-&= \sum_L\mathbb{P}[Y|L =l, A=a]\mathbb{P}(L=l)
-\end{aligned}$$
-Then the mean from the pseduo-population equals the counterfactual mean of interest.
+With conditional exchangeability, both the mean in the pseduo-population $\mathbb{E}[Y \mid A=a]$ and the standardized mean from the unadjusted populatin $\mathbb{E}[Y \mid A=a, L=l] \mathbb{P}(L=l)$ equal the counterfactual mean of interest.
 
 #### 2.
 
@@ -77,7 +69,8 @@ The third equality holds because by consistency, $\mathbb{I}(A=a)Y = Y^a$. The f
 
 ### Part 2
 
-#### a).
+#### 1.
+##### a).
 
 
 ```{r, eval=FALSE}
@@ -147,7 +140,7 @@ hist(dta$stab_ipw, main = "Distribution of Stabilized Weights", xlab = "Stabiliz
 All the unstabilized ip-weights are greater than 1. On the contrary stabilized ip-weights are distributed on the two sides of 1, and show an approximately mean of 1. Also, the dispersion of unstabilized ip-weights is larger then the dispersion of stabilized ip-weights
 
 
-#### b).
+##### b).
 
 :::{.callout-note title="Code 2"}
 ```{r}
@@ -169,11 +162,11 @@ summary(fit_stab)
 - Stabilized weights: ATE = 3.4405 (SE = 0.5257)
 
 
-#### c).
+##### c).
 
-\textcolor{blue}{As stated in their book[@hernan2023causal], we can get an estimated of ATE by fitting a weighted linear regression, with ipw weights. The task for estimating ATE then equals the task of estimating the variance of the coefficients in the weighted linear regression. Then generally, we have two methods: 1) use bootstrapping to construct variances; 2) use robust sandwich esimtator for variance.}
+As stated in their book[@hernan2023causal], we can get an estimated of ATE by fitting a weighted linear regression, with ipw weights. The task for estimating ATE then equals the task of estimating the variance of the coefficients in the weighted linear regression. Then generally, we have two methods: 1) use bootstrapping to construct variances; 2) use robust sandwich estimator for variance.
 
-In b) I used ``svyglm'' function to get robust estimators for variance, below I will use the ``sandwich'' function to do it again.
+In b) I used `svyglm` function to get robust estimators for variance, below I will use the `sandwich` function to do it again.
 
 
 :::{.callout-note title="Code 3"}
@@ -199,13 +192,277 @@ coef(fit_stab)["qsmk"] + c(-1,1)*1.96*sqrt(vcov["qsmk", "qsmk"])
 - Stabilized weights: 95% CI = (2.41 to 4.47)
 
 
-#### d).
+##### d).
 
-Both the point and the interval estimates are equal for estimatros from unstabilized and stabilized weights. Usually stabilized weights would bring more efficient estimators with lower variance. However, the last model to get ATE is a saturated model. As disucssed by @robins2000marginal,  the variability of the estimate will be the same whether we use the stabilized or unstabilized model.
+Both the point and the interval estimates are equal for estimaes from unstabilized and stabilized weights. Usually stabilized weights would bring more efficient estimators with lower variance. However, the last model to get ATE is a saturated model. As discussed by @robins2000marginal,  the variability of the estimate will be the same whether we use the stabilized or unstabilized model, when the MSM is saturated, which is the case in this question.
 
+#### 2.
+
+##### a).
+:::{.callout-note title="Code 4"}
+
+```{r}
+
+# fit an outcome model as required
+fit_outcome <- lm(wt82_71  ~ qsmk + qsmk:smokeintensity+ sex + age + I(age^2) + as.factor(race) + as.factor(education) + smokeintensity + I(smokeintensity^2) + smokeyrs + I(smokeyrs^2) + as.factor(active) + as.factor(exercise) + wt71 + I(wt71^2) , data = dta)
+
+# generate prediction where everyone has qsmk = 1 and qsmk 0 respectively
+newdata1 <- dta %>% select(-wt82_71) %>% mutate(qsmk = 1)
+newdata0 <- dta %>% select(-wt82_71) %>% mutate(qsmk = 0)
+
+# get predictions
+dta$Y_pred1 <- predict(fit_outcome, newdata1)
+dta$Y_pred0 <- predict(fit_outcome, newdata0)
+```
+:::
+
+##### b).
+
+:::{.callout-note title="Code 5"}
+```{r}
+dta %>% mutate(newvar = (qsmk/p_qsmk1 - (1-qsmk)/(1-p_qsmk1)) *(wt82_71 - Y_pred1*qsmk - Y_pred0*(1-qsmk)) + Y_pred1 - Y_pred0) %>%
+  summarise(dr_est = mean(newvar))
+```
+:::
+
+The DR estimator is 3.457, very close to the point estimate from the estimates by IPW estimators.
+
+##### c).
+
+
+Since the DR estimator, $\hat{\psi}_n^{\mathrm{DR}}=\mathrm{P}_n\left[\left(\frac{A}{\hat{g}(L)}-\frac{1-A}{1-\hat{g}(L)}\right)\left\{Y-\hat{m}_A(L)\right\}+\left\{\hat{m}_1(L)-\hat{m}_0(L)\right\}\right]$ involves two separate estimators, $\hat g(L)$ and $\hat m_1(L), \hat m_2(L)$, whose closed-form standard errors are hard to derive, I opt for using bootstrap. Conditions for the bootstrap estimate to be valid include:
+
+1. The sample is identically and independently distributed.
+2. Sample size is large enough.
+3. The DR estimator is consistent for the causal effect of interest.
+
+```{r, cache = T}
+bootstrap_function <- function(sim_id, data) {
+  rows <- sample(1:dim(data)[1], size = dim(data)[1], replace = TRUE) 
+  data_boot <- data[rows, ]
+  
+  # fit model for g(L)
+  fit_qsmk <- glm(qsmk ~ sex + age + I(age^2) + as.factor(race) + as.factor(education) + smokeintensity + I(smokeintensity^2) + smokeyrs + I(smokeyrs^2) + as.factor(active) + as.factor(exercise) + wt71 + I(wt71^2) , data = data_boot, family = binomial)
+  
+  # get prediction for g(L)
+  # calculate the predicted probability of qsmk = 1
+  data_boot$p_qsmk1 <- predict(fit_qsmk, data_boot, type = "response")
+  
+  # fit model for m1(L) and m0(L)
+  
+  fit_outcome <- lm(wt82_71  ~ qsmk + qsmk:smokeintensity+ sex + age + I(age^2) + as.factor(race) + as.factor(education) + smokeintensity + I(smokeintensity^2) + smokeyrs + I(smokeyrs^2) + as.factor(active) + as.factor(exercise) + wt71 + I(wt71^2) , data = data_boot,)
+  
+  # generate prediction where everyone has qsmk = 1 and qsmk 0 respectively
+  newdata1 <- data_boot %>% select(-wt82_71) %>% mutate(qsmk = 1)
+  newdata0 <- data_boot %>% select(-wt82_71) %>% mutate(qsmk = 0)
+  # get predictions
+  data_boot$Y_pred1 <- predict(fit_outcome, newdata1)
+  data_boot$Y_pred0 <- predict(fit_outcome, newdata0)
+  
+  result <- data_boot %>% mutate(newvar = (qsmk/p_qsmk1 - (1-qsmk)/(1-p_qsmk1)) *(wt82_71 -Y_pred1*qsmk - Y_pred0*(1-qsmk)) + Y_pred1 - Y_pred0) %>%
+  summarise(dr_est = mean(newvar)) 
+  
+  dr_est <- result
+  
+  
+    # get doubly-robust estimator
+  
+  p <- mean(data_boot$qsmk)
+  data_boot$unstab_ipw <- ifelse(data_boot$qsmk == 1, 1/data_boot$p_qsmk1, 1/(1-data_boot$p_qsmk1))
+  data_boot$stab_ipw <- ifelse(data_boot$qsmk == 1, p/data_boot$p_qsmk1, (1-p)/(1-data_boot$p_qsmk1))
+  
+  # get IPW estimators using stabilized weights and unstabilized weights
+  # unstabilized ipw
+  
+  fit_unstab <-glm(wt82_71 ~ qsmk, family = "gaussian",
+                    weights =unstab_ipw, data = data_boot)
+  
+  ipw_unstab <- coef(fit_unstab)["qsmk"]
+  # stabilized ipw
+  fit_stab <-glm(wt82_71 ~ qsmk, family = "gaussian",
+                    weights =stab_ipw, data = data_boot)
+
+  ipw_stab <- coef(fit_stab)["qsmk"]
+
+  data.frame(dr_est = dr_est, ipw_unstab = ipw_unstab, ipw_stab = ipw_stab) %>%
+    return()
+}
+
+
+library(furrr)
+plan("multisession")
+set.seed(123)
+result <- future_map_dfr(1:1000, ~bootstrap_function(.x, dta),
+                         .options = furrr_options(seed = TRUE))
+
+
+# DR-estimator
+point_estimate <- mean(result$dr_est)
+point_estimate
+
+se_estimate <- sd(result$dr_est)
+se_estimate
+
+low_ci <- point_estimate - 1.96*se_estimate
+up_ci <- point_estimate + 1.96*se_estimate
+
+c(low_ci, up_ci)
+
+
+# IPW-estimator with unstabilized weights
+point_estimate <- mean(result$ipw_unstab)
+point_estimate
+
+se_estimate <- sd(result$ipw_unstab)
+se_estimate
+
+low_ci <- point_estimate - 1.96*se_estimate
+up_ci <- point_estimate + 1.96*se_estimate
+
+c(low_ci, up_ci)
+
+# IPW-estimator with stabilized weights
+point_estimate <- mean(result$ipw_stab)
+point_estimate
+
+se_estimate <- sd(result$ipw_stab)
+se_estimate
+
+low_ci <- point_estimate - 1.96*se_estimate
+up_ci <- point_estimate + 1.96*se_estimate
+c(low_ci, up_ci)
+
+
+```
+
+- DR-estimator: the point estimate is 3.446. The standard error for the DR estimator
+is 0.4832, and the 95% CI is (2.50, 4.39).
+
+
+- IPW-estimator with unstabilized weights: the point estimate is 3.43. The standard error for the IPW estimator with unstabilized weights is 0.488, and the 95% CI is (2.47, 4.39).
+
+- IPW-estimator with stabilized weights: the point estimate is 3.43. The standard error for the IPW estimator with stabilized weights is 0.488, and the 95% CI is (2.47, 4.39).
+
+- The standard errors of the DR estimator is a bit smaller than the standard errors of the IPW estimators. Therefore, the width of confidence intervals of the DR estimator is narrower than the width of confidence intervals of the IPW estimators. Besides, the estimated standard error of IPW-estimators from bootstraps is very closed to 1 b) and 1c) by sandwich estimators.
 {{< pagebreak >}}
 
-### References
 
+## Question 2
+
+### Part 1
+
+#### 1.
+$$
+\begin{aligned}
+& \mathbb{E}\left[\frac{\mathbb{I}(A=a) Y}{\mathbb{P}(A \mid L)}\right] \\
+= & \mathbb{E}\left[\mathbb{E}\left[\left.\frac{\mathbb{I}(A=a) Y}{\mathbb{P}(A \mid L)} \right\rvert\, A, L\right]\right] \\
+= & \mathbb{E}\left[\frac{1}{\mathbb{P}(A=a \mid L)} \cdot \mathbb{E}[\mathbb{I}(A=a) Y \mid A, L]\right] \\
+= & \sum_{a^{\prime}} \sum_l \frac{1}{\mathbb{P}(A=a \mid L)} \cdot \mathbb{E}\left[\mathbb{I}(A=a) Y \mid A=a^{\prime}, L=l\right] \mathbb{P}\left(A=a^{\prime}, L=l\right) \\
+= & \sum_l \frac{1}{\mathbb{P}(A=a \mid L)} \mathbb{E}\left[Y \mid A=a, L=l\right] \cdot \mathbb{P}(A=a, L=l) \\
+= & \sum_l \frac{\mathbb{P}(A=a \mid L=l) \cdot \mathbb{P}(L=l)}{\mathbb{P}(A=a \mid L=l) } \cdot \mathbb{E}[Y \mid A=a, L=l] \\
+= & \sum_l \mathbb{E}[Y \mid A=a, L=l] \mathbb{P}(L=l)
+\end{aligned}
+$$
+
+#### 2.
+
+$$
+\begin{aligned}
+& \mathbb{E}\left[Y^a\right] \\
+= & \sum_l \mathbb{E}\left[Y^a \mid L=l\right] \cdot \mathbb{P}(L=l) \\
+= & \sum_l \mathbb{E}\left[Y^a \mid A=a, L=l\right] \mathbb{P}(L=l) \\
+= & \sum_l \mathbb{E}[Y \mid A=a, L=1] \mathbb{P}(L=l)
+\end{aligned}
+$$
+
+The second equation holds because of conditional exchangeability. The third equation holds because of consistency.
+
+#### 3.
+
+- When the outcome model is correctly specified, I prefer the standardization estimator because it is more efficient than the double robust estimator.
+
+- When we are not confident in the outcome model, I prefer the doubly robust estimator because it allows a second chance to achieve a consistent estimator if the propensity score model can be correctly specified.
+
+### Part 2
+
+#### 1.
+
+##### a).
+
+The model is the same as the one in Question 1 Part 2.2. a).
+
+:::{.callout-note title="Code 6"}
+
+```{r}
+
+# fit an outcome model as required
+fit_outcome <- lm(wt82_71  ~ qsmk + qsmk:smokeintensity+ sex + age + I(age^2) + as.factor(race) + as.factor(education) + smokeintensity + I(smokeintensity^2) + smokeyrs + I(smokeyrs^2) + as.factor(active) + as.factor(exercise) + wt71 + I(wt71^2) , data = dta)
+
+# generate prediction where everyone has qsmk = 1 and qsmk 0 respectively
+newdata1 <- dta %>% select(-wt82_71) %>% mutate(qsmk = 1)
+newdata0 <- dta %>% select(-wt82_71) %>% mutate(qsmk = 0)
+
+# get predictions
+dta$Y_pred1 <- predict(fit_outcome, newdata1)
+dta$Y_pred0 <- predict(fit_outcome, newdata0)
+
+# The standardization estimator is
+mean(dta$Y_pred1 - dta$Y_pred0)
+```
+:::
+
+
+##### b).
+
+The standardization estimate is 3.52, greater than the IP weighting estimators (3.44). They are different because we are building two different models. Either the outcome model or the propensity score model could be misspecified. If both the models are correctly specified, then the two estimators would both be consistent with respect to the true ATE. 
+
+
+##### c).
+
+The results of IP weighting and G-computation will not always match.
+
+1. As explained in b). whenever one of the outcome model or the propensity score model is misspecified, the two estimators will converge to different values and would not asymptotically match.
+
+2. Even if both models are correct specified, IP weighting and G-computation are equivalent in the sense of expectation. That is, they are equivalent with infinite samples. Usually, with definite samples, the two estimator results do not match.
+
+
+#### 2.
+
+##### a). 
+
+"Doubly robust" means that the estimator is consistent if either the propensity score model for $g(L) = \mathbb{P}(A=1|L)$ is correctly specified, or the outcome model for $m(A,L) = \mathbb{E}[Y|A,L]$ is correctly specified. 
+
+
+##### b).
+
+The analytic standard errors can be estimated by the sample variance, as proposed by [David Benkeser](https://cran.r-project.org/web/packages/drtmle/vignettes/using_drtmle.html) proposed using the empirical standard errors, that is 
+$$\sigma^2(\hat{\psi}_{n,i}^{\mathrm{DR}}) = \frac{\sigma^2_n}{n^{1/2}}$$
+
+
+$$\sigma^2_n = \frac{1}{n-1} \sum_{i=1}^n\{\hat{\psi}_{n,i}^{\mathrm{DR}} -\frac{1}{n} \sum_{j=1}^n\hat{\psi}_{n,j}^{\mathrm{DR}}\}^2$$
+
+The derivation is based on the decomposition we discussed during the lecture, where 
+$\hat{\psi}_{n,i}^{\mathrm{DR}} = \text{P}_n(\hat f)$ and $\psi = \text{P}f = \mathbb{E}f(O_i)$. Thus, 
+$$\hat{\psi}_{n,i}^{\mathrm{DR}} - \psi = \left(\mathrm{P}_n-\mathrm{P}\right)(\hat{f}-f)+\left(\mathrm{P}_n-\mathrm{P}\right) f+\mathrm{P}(\hat{f}-f)$$
+where we have shown that $\left(\mathrm{P}_n-\mathrm{P}\right)(\hat{f}-f) = o_{\mathrm p} (\sqrt{n})$ and $\mathrm{P}(\hat{f}-f) = o_{\mathrm p} (\sqrt{n})$. Thus, $\sqrt{n}(\hat{\psi}_{n,i}^{\mathrm{DR}} - \psi) \overset{d}{\rightarrow} N(0, \mathbb{V}(f(O)))$. We use the sample mean $\sigma^2_n$ to estimate $\mathbb{V}(f(O))$.
+
+
+:::{.callout-note title="Code 7"}
+```{r}
+dta %>% mutate(newvar = (qsmk/p_qsmk1 - (1-qsmk)/(1-p_qsmk1)) *(wt82_71 - Y_pred1*qsmk - Y_pred0*(1-qsmk)) + Y_pred1 - Y_pred0) %>%
+  summarise(dr_est = mean(newvar),
+            se_est = sd(newvar)/sqrt(dim(dta)[1])) %>%
+  mutate(low_ci = dr_est - 1.96*se_est,
+         up_ci = dr_est + 1.96*se_est)
+
+```
+:::
+
+
+The point estimate is 3.46, the standard error is 0.49, and the 95% CI is 2.50 to 4.42. The analytic results are very close to the one using bootstrapping in Question 1 Part 2. c).
+
+
+
+### References
 ::: {#refs}
 :::
